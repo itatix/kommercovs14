@@ -1,0 +1,224 @@
+# -*- coding: utf-8 -*-
+##############################################################################
+#
+#    OpenERP, Open Source Management Solution
+#    Copyright (C) 2004-2009 Tiny SPRL (<http://tiny.be>).
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU Affero General Public License as
+#    published by the Free Software Foundation, either version 3 of the
+#    License, or (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU Affero General Public License for more details.
+#
+#    You should have received a copy of the GNU Affero General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+##############################################################################
+
+from odoo import fields, osv, models, api
+from odoo.tools.translate import _
+import logging
+_logger = logging.getLogger(__name__)
+
+import pdb
+import requests
+import re
+
+from .product_sku_rule import *
+
+class SaleOrder(models.Model):
+
+    _inherit = "sale.order"
+
+    def _meli_order_update( self, config=None, data=None ):
+        _logger.info("_meli_order_update")
+        for order in self:
+
+            order.warehouse_id = order._meli_get_warehouse_id(config=config)
+            #is_full = 'order_json' in data
+            if ((order.meli_shipment and order.meli_shipment.logistic_type == "fulfillment")
+                or order.meli_shipment_logistic_type=="fulfillment"):
+                #seleccionar almacen para la orden
+                order.warehouse_id = order._meli_get_warehouse_id(config=config)
+
+            order_type = self.env["mercadolibre.orders"].get_sale_order_type( config=config, sale_order=order, shipment=(order and order.meli_shipment) )
+            if order_type and "type_id" in order_type:
+                order.type_id = order_type["type_id"]
+                _logger.info("order_type:"+str(order_type))
+
+    def _meli_get_warehouse_id( self, config=None ):
+
+        company = (config and 'company_id' in config._fields and config.company_id) or self.env.user.company_id
+        config = config or company
+        wh_id = None
+
+        if (config.mercadolibre_stock_warehouse):
+            wh_id = config.mercadolibre_stock_warehouse
+
+        if (self.meli_shipment_logistic_type == "fulfillment"):
+            if (config.mercadolibre_stock_warehouse_full):
+                wh_id = config.mercadolibre_stock_warehouse_full
+        return wh_id
+
+    #try to update order before confirmation (quotation)
+    def confirm_ml( self, meli=None, config=None ):
+        _logger.info("meli_oerp_stock confirm_ml")
+        company = (config and 'company_id' in config._fields and config.company_id) or self.env.user.company_id
+        config = config or company
+
+        self._meli_order_update( config=config )
+
+        super(SaleOrder, self).confirm_ml( meli=meli, config=config )
+
+        #seleccionar en la confirmacion del stock.picking la informacion del carrier
+        #
+        _logger.info("meli_oerp_stock confirm_ml ended.")
+
+
+class MercadolibreOrder(models.Model):
+
+    _inherit = "mercadolibre.orders"
+
+    #update order after any quotation/order confirmation
+    def orders_update_order_json( self, data, context=None, config=None, meli=None ):
+
+        result = super(MercadolibreOrder, self).orders_update_order_json( data=data, context=context, config=config, meli=meli)
+
+        if "error" in result and not 'No product related to meli_id' in result['error']:
+            return result
+        #company = self.env.user.company_id
+        oid = ('id' in data and data['id']) or ('order_json' in data and 'id' in data['order_json'] and data['order_json']["id"])
+        if oid:
+            order = self.env['mercadolibre.orders'].search([( 'order_id','=',str(oid) )], limit=1)
+            if order:
+                sorder = order.sale_order or (order.shipment and order.shipment.sale_order)
+                if sorder:
+                    sorder._meli_order_update( config=config, data=data )
+                else:
+                    _logger.info("missing sale order for:"+str(order.name))
+            else:
+                _logger.info("missing meli order for:"+str(oid))
+        else:
+            _logger.info("missing id in data:"+str(data))
+
+        return result
+
+    #mapping procedure params: sku or item
+    def map_meli_sku( self, meli_sku=None, meli_item=None ):
+        _logger.info("map_meli_sku: "+str(meli_item))
+        odoo_sku = None
+        mapped = None
+        filtered = None
+        seller_sku = meli_sku or (meli_item and 'seller_sku' in meli_item and meli_item['seller_sku']) or (meli_item and 'seller_custom_field' in meli_item and meli_item['seller_custom_field'])
+
+        if seller_sku:
+            #mapped skus (json dict string assigned)
+            if mapping_meli_sku_regex:
+                for reg in mapping_meli_sku_regex:
+                    rules = mapping_meli_sku_regex[reg]
+                    for rule in rules:
+                        regex = "regex" in rule and rule["regex"]
+                        if regex and not filtered:
+                            group = "group" in rule and rule["group"]
+                            c = re.compile(regex)
+                            if c:
+                                ms = c.findall(seller_sku)
+                                if ms:
+                                    if len(ms)>group:
+                                        m = ms[group]
+                                        filtered = m
+                                        _logger.info("filtered ok: regex: "+str(rule)+" result: "+str(m))
+                                        break;
+
+            mapped_sku = (mapping_meli_sku_defaut_code and seller_sku in mapping_meli_sku_defaut_code and mapping_meli_sku_defaut_code[seller_sku])
+            mapped_sku = mapped_sku or self.env['meli_oerp.sku.rule'].map_to_sku(name=seller_sku)
+            odoo_sku = mapped_sku or filtered or seller_sku
+
+        if mapped_sku:
+            _logger.info("map_meli_sku(): meli_sku: "+str(seller_sku)+" mapped to: "+str(odoo_sku))
+
+        return odoo_sku
+
+    #extended from mercadolibre.orders: SKU formulas
+    def search_meli_product( self, meli=None, meli_item=None, config=None ):
+        _logger.info("search_meli_product extended: "+str(meli_item))
+        product_related = super(MercadolibreOrder, self).search_meli_product( meli=meli, meli_item=meli_item, config=config )
+
+        product_obj = self.env['product.product']
+        if ( len(product_related)==0 and ('seller_custom_field' in meli_item or 'seller_sku' in meli_item)):
+
+            #Mapping meli sku to odoo sku
+            meli_item["seller_sku"] = self.map_meli_sku( meli_item=meli_item )
+
+            #1ST attempt "seller_sku" or "seller_custom_field"
+            seller_sku = ('seller_sku' in meli_item and meli_item['seller_sku']) or ('seller_custom_field' in meli_item and meli_item['seller_custom_field'])
+            if (seller_sku):
+                product_related = product_obj.search([('default_code','=',seller_sku)])
+
+            #2ND attempt only old "seller_custom_field"
+            if (not product_related and 'seller_custom_field' in meli_item):
+                seller_sku = ('seller_custom_field' in meli_item and meli_item['seller_custom_field'])
+            if (seller_sku):
+                product_related = product_obj.search([('default_code','=',seller_sku)])
+            if not product_related:
+                order = self
+                order and order.message_post(body=str('seller sku not founded: '+str(seller_sku)))
+
+        #product_obj = self.env['product.product']
+
+        return product_related
+
+    def get_sale_order_type( self, meli=None, order_json=None, config=None, sale_order=None, shipment=None ):
+
+        meli_order_fields =  {}
+
+        if ('sale.order.type' in self.env and sale_order):
+
+            so_type_log_id = None
+            so_type_log = None
+
+            so_type_log = self.env['sale.order.type'].search([('name','like','SO-MELI')],limit=1)
+            if not so_type_log:
+                so_type_log = self.env['sale.order.type'].search([('name','like','SO-MLB')],limit=1)
+            if not so_type_log:
+                so_type_log = self.env['sale.order.type'].search([('name','like','SO-ECM')],limit=1)
+
+            logistic_type = (shipment and "logistic_type" in shipment._fields and shipment.logistic_type)
+            logistic_type = logistic_type or (sale_order and sale_order.meli_shipment_logistic_type)
+
+            if logistic_type:
+                #
+                if "fulfillment" in logistic_type:
+                    so_type_log = self.env['sale.order.type'].search([('name','like','SO-MLF')],limit=1)
+
+            so_type_log_id = so_type_log and so_type_log.id
+            meli_order_fields["type_id"] = so_type_log_id
+
+        return meli_order_fields
+
+    def prepare_sale_order_vals( self, meli=None, order_json=None, config=None, sale_order=None, shipment=None ):
+        meli_order_fields = super(MercadolibreOrder, self).prepare_sale_order_vals(meli=meli, order_json=order_json, config=config, sale_order=sale_order, shipment=shipment )
+        if ('sale.order.type' in self.env):
+            meli_order_fields.update( self.get_sale_order_type(meli=meli, order_json=order_json, config=config, sale_order=sale_order, shipment=shipment) )
+
+        wh_id = None
+        if (config.mercadolibre_stock_warehouse):
+            wh_id = config.mercadolibre_stock_warehouse
+        if (self.shipment_logistic_type == "fulfillment"):
+            if (config.mercadolibre_stock_warehouse_full):
+                wh_id = config.mercadolibre_stock_warehouse_full
+        if wh_id:
+            meli_order_fields.update({'warehouse_id': wh_id.id })
+        _logger.info("prepare_sale_order_vals > meli_order_fields:"+str(meli_order_fields))
+        return meli_order_fields
+
+#[22:35, 30/04/2021] Clemmy: cancelled ship-delivered
+#[22:35, 30/04/2021] Clemmy: cancelled ship-not_deliveredreturned_to_hub
+#[22:35, 30/04/2021] Clemmy: cancelled ship-not_deliveredreturning_to_sender
+#[22:35, 30/04/2021] Clemmy: DEVUELTES
+#[22:36, 30/04/2021] Clemmy: ni siquiera salio
+#[22:36, 30/04/2021] Clemmy: cancelled ship-cancelled
