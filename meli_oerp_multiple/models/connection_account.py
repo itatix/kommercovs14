@@ -112,7 +112,7 @@ class MercadoLibreConnectionAccount(models.Model):
         company = (account and account.company_id) or self.env.user.company_id
         config = (account and account.configuration) or company
 
-        _logger.info("account >> meli_notifications")
+        _logger.info("account >> meli_notifications "+str(account.name))
 
         if (config.mercadolibre_process_notifications):
             return self.env['mercadolibre.notification'].fetch_lasts( data=data, company=company, account=account, meli=meli )
@@ -153,14 +153,14 @@ class MercadoLibreConnectionAccount(models.Model):
                 _logger.info("account config mercadolibre_cron_get_orders")
                 connacc.meli_query_orders()
 
-            if (config.mercadolibre_cron_get_questions):
-                _logger.info("account config mercadolibre_cron_get_questions")
-                connacc.meli_query_get_questions()
+            #if (config.mercadolibre_cron_get_questions):
+            #    _logger.info("account config mercadolibre_cron_get_questions")
+            #    connacc.meli_query_get_questions()
 
 
     def cron_meli_process( self ):
 
-        _logger.info('account cron_meli_process() ')
+        _logger.info( 'account cron_meli_process() STARTED ' + str( datetime.now() ) )
 
         for connacc in self:
 
@@ -192,6 +192,8 @@ class MercadoLibreConnectionAccount(models.Model):
                 _logger.info("config.mercadolibre_cron_post_update_price")
                 connacc.meli_update_remote_price(meli=apistate)
 
+
+        _logger.info( 'account cron_meli_process() ENDED ' + str( datetime.now() ) )
     #TODO: {
     #  "id": "GTIN",
     #  "name": "Código universal de producto",
@@ -509,18 +511,28 @@ class MercadoLibreConnectionAccount(models.Model):
     def meli_query_get_questions(self):
 
         _logger.info("account >> meli_query_get_questions")
-        posting_obj = self.env['mercadolibre.posting']
-        #posting_ids = posting_obj.search(['|',('meli_status','=','active'),('meli_status','=','under_review')])
-        #_logger.info(posting_ids)
-        #if (posting_ids):
-        #    for posting in posting_ids:
-        #        posting.posting_query_questions()
+        for account in self:
+            company = account.company_id or self.env.user.company_id
+            config = account.configuration
 
-        #posting_ids = posting_obj.search(['&',('meli_status','!=','active'),('meli_status','!=','under_review')])
-        #_logger.info(posting_ids)
-        #if (posting_ids):
-        #    for posting in posting_ids:
-        #        posting.posting_query_questions()
+            _logger.info("account >> meli_query_get_questions >> "+str(account.name))
+
+            meli = self.env['meli.util'].get_new_instance( company, account )
+            if meli.need_login():
+                return meli.redirect_login()
+
+            productT_bind_ids = self.env['mercadolibre.product_template'].search([
+                ('connection_account', '=', account.id ),
+            ], order='id asc')
+
+            _logger.info("productT_bind_ids:"+str(productT_bind_ids))
+
+            if productT_bind_ids:
+                for bindT in productT_bind_ids:
+                    _logger.info("account >> meli_query_get_questions >> "+str(bindT.name))
+                    bindT.query_questions( meli=meli, config=config )
+
+
         return {}
 
     def meli_query_products(self):
@@ -809,13 +821,13 @@ class MercadoLibreConnectionAccount(models.Model):
                 self._cr.rollback()
         return {}
 
-    def meli_update_remote_products(self,postnew=False):
+    def meli_update_remote_products( self, post_new=False ):
         #
         _logger.info("meli_update_remote_products")
 
     def meli_update_remote_stock(self, meli=False):
         account = self
-        _logger.info('account.meli_update_remote_stock() '+str(account.name))
+        _logger.info('account.meli_update_remote_stock() STARTED '+str(account.name) + " " +str( datetime.now() ))
         company = account.company_id or self.env.user.company_id
         config = account.configuration or company
 
@@ -826,17 +838,26 @@ class MercadoLibreConnectionAccount(models.Model):
 
         if (config.mercadolibre_cron_post_update_stock):
             auto_commit = not getattr(threading.currentThread(), 'testing', False)
-            product_bind_ids = self.env['mercadolibre.product'].search([
+            product_bind_ids_null = self.env['mercadolibre.product'].search([
                 #('meli_pub','=',True),
                 #('meli_id','!=',False),
-                ('connection_account', '=', account.id )
+                ('connection_account', '=', account.id ),
+                ('stock_update','=',False),
+                #'|',('company_id','=',False),('company_id','=',company.id)
+                ], order='id asc')
+            product_bind_ids_not_null = self.env['mercadolibre.product'].search([
+                #('meli_pub','=',True),
+                #('meli_id','!=',False),
+                ('connection_account', '=', account.id ),
+                ('stock_update','!=',False)
                 #'|',('company_id','=',False),('company_id','=',company.id)
                 ], order='stock_update asc')
+            product_bind_ids = product_bind_ids_null + product_bind_ids_not_null
             _logger.info("product_bind_ids stock to update:" + str(product_bind_ids))
             _logger.info("account updating stock #" + str(len(product_bind_ids)) + " on " + str(account.name))
             icommit = 0
             icount = 0
-            topcommits = 120
+            topcommits = 10
             maxcommits = len(product_bind_ids)
             internals = {
                 "application_id": account.client_id,
@@ -896,6 +917,7 @@ class MercadoLibreConnectionAccount(models.Model):
                 if auto_commit:
                     self.env.cr.commit()
 
+        _logger.info('account.meli_update_remote_stock() ENDED '+str(account.name) + " " +str( datetime.now() ))
         return {}
 
     def meli_update_remote_stock_injobs(self, meli=False, notification=None):
@@ -2021,12 +2043,12 @@ class MercadoLibreConnectionAccount(models.Model):
 
                 _logger.info(shpfields)
                 _logger.info("Searching MercadoLibre Shipment: " + str(shpid))
-                oshp = self.env["mercadolibre.shipment"].sudo().search([( 'conn_id', '=', shpid ),
+                oshp = self.env["mercadolibre.bind_shipment"].sudo().search([( 'conn_id', '=', shpid ),
                                                                     ('order_id','=',pso.id),
                                                                     ("connection_account","=",account.id)])
                 if not oshp:
                     _logger.info("Creating mercadolibre shipment record")
-                    oshp = self.env["mercadolibre.shipment"].sudo().create( shpfields )
+                    oshp = self.env["mercadolibre.bind_shipment"].sudo().create( shpfields )
                 else:
                     _logger.info("Updating mercadolibre shipment record")
                     oshp.write( shpfields )
