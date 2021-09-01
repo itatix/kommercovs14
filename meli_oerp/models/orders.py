@@ -180,6 +180,33 @@ class sale_order(models.Model):
             return invoices[0]
         return None
 
+    def meli_amount_to_invoice( self, meli=None, config=None ):
+
+        total_config = (config and "mercadolibre_order_total_config" in config._fields) and config.mercadolibre_order_total_config
+
+        if not config or not total_config:
+            return self.meli_total_amount;
+
+        if total_config in ['manual']:
+            #resolve always as conflict
+            return 0
+
+        if total_config in ['manual_conflict']:
+            if abs(self.meli_total_amount - self.meli_paid_amount)<1.0:
+                return self.meli_paid_amount
+            else:
+                #conflict if do not match
+                return 0
+
+        if total_config in ['paid_amount']:
+            return self.meli_paid_amount
+
+        if total_config in ['total_amount']:
+            return self.meli_total_amount
+
+        return 0
+
+
     def confirm_ml( self, meli=None, config=None ):
         try:
             _logger.info("meli_oerp confirm_ml")
@@ -189,7 +216,8 @@ class sale_order(models.Model):
 
             stock_picking = self.env["stock.picking"]
 
-            confirm_cond = abs(self.meli_paid_amount - self.amount_total)<0.1
+            amount_to_invoice = self.meli_amount_to_invoice( meli=meli, config=config )
+            confirm_cond = (amount_to_invoice > 0)
             if not confirm_cond:
                 return {'error': "Condition not met: meli_paid_amount and amount_total doesn't match"}
 
@@ -251,8 +279,24 @@ class sale_order(models.Model):
         _logger.info("meli_oerp confirm_ml ended.")
         return res
 
+    def meli_fix_team( self, meli=None, config=None ):
+        company = (config and "company_id" in config._fields and config.company_id) or self.env.user.company_id
+        seller_team = (config and config.mercadolibre_seller_team) or None
+        _logger.info("meli_fix_team: company: "+str(company.name)+" seller_team:"+str(seller_team and seller_team.name))
+        so = self
+        if not so:
+            return None
+        team_id = so.sudo().team_id
+        _logger.info("meli_fix_team: so.team_id: "+str(team_id and team_id.name))
+        if team_id and team_id.company_id.id != company.id:
+            if (seller_team and seller_team.company_id.id == company.id):
+                so.sudo().write( { 'team_id': seller_team.id } )
+            else:
+                #unassigned bad team
+                so.sudo().write( { 'team_id': None } )
+
     _sql_constraints = [
-        ('unique_meli_order_id', 'unique(meli_order_id)', 'Mei Order id already exists!')
+        ('unique_meli_order_id', 'unique(meli_order_id)', 'Meli Order id already exists!')
     ]
 sale_order()
 
@@ -996,7 +1040,9 @@ class mercadolibre_orders(models.Model):
         if (sorder and sorder.id):
             _logger.info("Updating sale.order: %s" % (sorder.id))
             #_logger.info(meli_order_fields)
+            sorder.meli_fix_team( meli=meli, config=config )
             sorder.write( meli_order_fields )
+            sorder.meli_fix_team( meli=meli, config=config )
         else:
             #_logger.info(meli_order_fields)
             #user
@@ -1012,6 +1058,7 @@ class mercadolibre_orders(models.Model):
             else:
                 _logger.info("Adding new sale.order: " )
                 sorder = saleorder_obj.create((meli_order_fields))
+                sorder.meli_fix_team( meli=meli, config=config )
 
         #check error
         if not order:
@@ -1631,8 +1678,8 @@ class mercadolibre_orders_update(models.TransientModel):
 
 mercadolibre_orders_update()
 
-class sale_order_cancel(models.TransientModel):
-    _name = "sale.order.cancel"
+class sale_order_cancel_wiz_meli(models.TransientModel):
+    _name = "sale.order.cancel.wiz.meli"
     _description = "Cancel Order"
 
     def cancel_order(self, context=None):
@@ -1658,4 +1705,4 @@ class sale_order_cancel(models.TransientModel):
 
         return {}
 
-sale_order_cancel()
+sale_order_cancel_wiz_meli()

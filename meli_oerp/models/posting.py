@@ -127,29 +127,7 @@ class mercadolibre_posting(models.Model):
                 for Question in questions:
                     cn = cn + 1
 
-                    question_answer = Question['answer']
-
-                    question_fields = {
-                        'posting_id': posting.id,
-                        'question_id': Question['id'],
-                        'date_created': ml_datetime(Question['date_created']),
-                        'item_id': Question['item_id'],
-                        'seller_id': Question['seller_id'],
-                        'text': Question['text'].encode("utf-8"),
-                        'status': Question['status'],
-                    }
-
-                    if (question_answer):
-                        question_fields['answer_text'] = question_answer['text'].encode("utf-8")
-                        question_fields['answer_status'] = question_answer['status']
-                        question_fields['answer_date_created'] = ml_datetime(question_answer['date_created'])
-
-                    question = questions_obj.search( [('question_id','=',question_fields['question_id'])])
-                    if not question:
-    	                question = questions_obj.create( ( question_fields ))
-                    else:
-                        if question:
-                            question.write( (question_fields) )
+                    self.env['mercadolibre.questions'].process_question(Question=Question,meli=meli,config=company)
 
 
         return {}
@@ -159,15 +137,16 @@ class mercadolibre_posting(models.Model):
 
         return {}
 
-    posting_date = fields.Date('Fecha del posting');
-    name = fields.Char('Name');
-    meli_id = fields.Char('Id del item asignado por Meli', size=256);
-    product_id = fields.Many2one('product.product','product_id');
-    meli_status = fields.Char( string="Estado del producto en MLA", size=256 );
-    meli_permalink = fields.Char( string="Permalink en MercadoLibre", size=512 );
-    meli_price = fields.Char(string='Precio de venta', size=128);
-    posting_questions = fields.One2many( 'mercadolibre.questions','posting_id','Questions' );
-    posting_update = fields.Char( compute=_posting_update, string="Posting Update", store=False );
-    meli_seller_custom_field = fields.Char('Sellect Custom Field or SKU',size=256);
+    posting_date = fields.Date('Fecha del posting')
+    name = fields.Char('Name')
+    meli_id = fields.Char('Id del item asignado por Meli', size=256)
+    product_id = fields.Many2one('product.product','product_id')
+    product_id_active = fields.Boolean(related='product_id.active',string="Active product")
+    meli_status = fields.Char( string="Estado del producto en MLA", size=256 )
+    meli_permalink = fields.Char( string="Permalink en MercadoLibre", size=512 )
+    meli_price = fields.Char(string='Precio de venta', size=128)
+    posting_questions = fields.One2many( 'mercadolibre.questions','posting_id','Questions' )
+    posting_update = fields.Char( compute=_posting_update, string="Posting Update", store=False )
+    meli_seller_custom_field = fields.Char('Sellect Custom Field or SKU',size=256)
 
 mercadolibre_posting()

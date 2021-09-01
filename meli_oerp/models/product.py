@@ -45,6 +45,23 @@ if (not ('replace' in string.__dict__)):
 from . import versions
 from .versions import *
 
+from html.parser import HTMLParser
+
+class MyHTMLParser(HTMLParser):
+    full_text = ""
+
+    def handle_starttag(self, tag, attrs):
+        #print("Encountered a start tag:", tag)
+        self.full_text+= ""
+
+    def handle_endtag(self, tag):
+        #print("Encountered an end tag :", tag)
+        self.full_text+= " "
+
+    def handle_data(self, data):
+        #print("Encountered some data  :", data)
+        self.full_text+= str(data)
+
 class product_template(models.Model):
     _inherit = "product.template"
 
@@ -335,7 +352,27 @@ class product_template(models.Model):
                     coma = ","
             tpl.meli_ids = ml_ids
 
-    name = fields.Char('Name', size=128, required=True, translate=False, index=True)
+    def product_template_post_stock( self, context=None, meli=None ):
+        _logger.info("base product.template: product_template_post_stock")
+        custom_context = {}
+        context = context or self.env.context
+        force_meli_pub = False
+        force_meli_active = False
+        if ("force_meli_pub" in context):
+            force_meli_pub = context.get("force_meli_pub")
+            custom_context = { "force_meli_pub": force_meli_pub, "force_meli_active": force_meli_active }
+        if ("force_meli_active" in context):
+            force_meli_active = context.get("force_meli_active")
+            custom_context = { "force_meli_pub": force_meli_pub, "force_meli_active": force_meli_active }
+        _logger.info(custom_context)
+        res = []
+        for productT in self:
+            for variant in productT.product_variant_ids:
+                r = variant.with_context(custom_context).product_post_stock(meli=meli)
+                res.append(r)
+        return res
+
+    #name = fields.Char('Name', size=128, required=True, translate=False, index=True)
     meli_title = fields.Char(string='Nombre del producto en Mercado Libre',size=256)
     meli_description = fields.Text(string='Descripción')
     meli_category = fields.Many2one("mercadolibre.category","Categoría de MercadoLibre")
@@ -367,8 +404,8 @@ class product_template(models.Model):
     meli_variants_status = fields.Text(compute=product_template_stats,string='Meli Variant Status')
 
     meli_pub_as_variant = fields.Boolean('Publicar variantes como variantes en ML',help='Publicar variantes como variantes de la misma publicación, no como publicaciones independientes.')
-    meli_pub_variant_attributes = fields.Many2many(prod_att_line, string='Atributos a publicar en ML',help='Seleccionar los atributos a publicar')
-    meli_pub_principal_variant = fields.Many2one( 'product.product',string='Variante principal',help='Variante principal')
+    meli_pub_variant_attributes = fields.Many2many(prod_att_line, string='Atributos a publicar en ML',help='Seleccionar los atributos a publicar',copy=None)
+    meli_pub_principal_variant = fields.Many2one( 'product.product',string='Variante principal',help='Variante principal',copy=None)
 
     meli_model = fields.Char(string="Modelo [meli]",size=256)
     meli_brand = fields.Char(string="Marca [meli]",size=256)
@@ -436,7 +473,7 @@ class product_product(models.Model):
         pl = False
         if config.mercadolibre_pricelist:
             pl = config.mercadolibre_pricelist
-
+        #_logger.info("pl:"+str(pl)+" name:"+str(pl and pl.name))
         if (pl):
             #pass
             pli = self.env['product.pricelist.item']
@@ -448,6 +485,7 @@ class product_product(models.Model):
             pli_var = pli.search([('pricelist_id','in',[pl.id]),('product_id','=',self.id)])
 
             if (pli_tpl or pli_var):
+                #_logger.info("Updating price")
                 return_val = pl.price_get( self.id, 1.0 )
                 if (pl.id in return_val):
                     old_price = return_val[pl.id]
@@ -965,7 +1003,7 @@ class product_product(models.Model):
                                     pass
                                 else:
                                     #_logger.info("Creating att line id:")
-                                    att_vals = prepare_attribute( product_template.id, attribute_id, attribute_value_id )
+                                    att_vals = prepare_attribute( product_template_id=product_template.id, attribute_id=attribute_id, attribute_value_id=attribute_value_id )
                                     attribute_line =  self.env[prod_att_line].create(att_vals)
 
                                 if (attribute_line):
@@ -985,6 +1023,8 @@ class product_product(models.Model):
                                     else:
                                         #_logger.info("Adding value id")
                                         attribute_line.value_ids = [(4,attribute_value_id)]
+
+        _logger.info("_get_variations:"+str(variations))
 
         return published_att_variants
 
@@ -1335,7 +1375,7 @@ class product_product(models.Model):
                             #_logger.info("has_sku")
                             #_logger.info(variation["seller_custom_field"])
                             try:
-                                variant.default_code = variation["seller_custom_field"] or variation["seller_sku"]
+                                variant.default_code = ("seller_ku" in variation and variation["seller_sku"]) or ("seller_custom_field" in variation and variation["seller_custom_field"])
                             except:
                                 pass;
                             variant.meli_id_variation = variation["id"]
@@ -1345,11 +1385,17 @@ class product_product(models.Model):
 
                         if ("barcode" in variation):
                             try:
-                                bcodes = self.env["product.product"].search([('barcode','=',variation["barcode"])])
+                                bcodes = self.env["product.product"].search([('barcode','=',variation["barcode"]),('active','=',True)])
+                                bcodes_archived = self.env["product.product"].search([('barcode','=',variation["barcode"]),('active','=',False)])
+
+                                if not bcodes and bcodes_archived:
+                                    _logger.error("Error barcode already defined! In archived product variant!!"+str(variation["barcode"]))
+                                    bcodes = bcodes_archived
+
                                 if bcodes and len(bcodes):
                                     _logger.error("Error barcode already defined! "+str(variation["barcode"]))
                                 else:
-                                    variant.barcode = barcode
+                                    variant.barcode = variation["barcode"]
                             except:
                                 pass;
 
@@ -1371,6 +1417,7 @@ class product_product(models.Model):
                     product = variant
         else:
             #NO TIENE variantes pero tiene SKU
+            _logger.error("NO TIENE variantes pero tiene SKU "+str(rjson))
             seller_sku = None
             barcode = None
 
@@ -1387,10 +1434,17 @@ class product_product(models.Model):
             if barcode and not product.barcode:
                 try:
                     bcodes = self.env["product.product"].search([('barcode','=',barcode)])
+                    bcodes_archived = self.env["product.product"].search([('barcode','=',barcode),('active','=',False)])
+
+                    if not bcodes and bcodes_archived:
+                        _logger.error("Error barcode already defined! In archived product variant!! "+str(barcode))
+                        bcodes = bcodes_archived
+
                     if bcodes and len(bcodes):
                         _logger.error("Error barcode already defined! "+str(barcode))
                     else:
                         product.barcode = barcode
+                        _logger.info("product.barcode: "+str(product.barcode))
                 except:
                     _logger.error("Error updating barcode")
                     pass;
@@ -1457,8 +1511,9 @@ class product_product(models.Model):
                     variant.meli_default_stock_product = ptemp_nfree
 
         if (company.mercadolibre_update_existings_variants and 'attributes' in rjson):
+            _logger.info("Update attributes: "+str(rjson['attributes']))
             self._get_non_variant_attributes(rjson['attributes'])
-
+        _logger.info("End product_meli_get_product")
         return {}
 
     def set_bom(self, has_sku=True):
@@ -2156,7 +2211,15 @@ class product_product(models.Model):
                                         and config.mercadolibre_product_template_override_method in ['default','description','title_and_description']
                                         )
         if force_template_description or product_tmpl.meli_description==False or ( product_tmpl.meli_description and len(product_tmpl.meli_description)==0):
-            product_tmpl.meli_description = product_tmpl.description_sale
+            parser = MyHTMLParser()
+            _logger.info("parsing website_description:"+str(parser))
+            html_des = ("website_description" in product_tmpl._fields and product_tmpl.website_description)
+            if html_des:
+                _logger.info("parsing website_description:"+str(html_des))
+                parser.feed(html_des)
+                html_des = parser.full_text
+                _logger.info("parsing website_description html:"+str(html_des))
+            product_tmpl.meli_description = html_des or product_tmpl.description_sale
 
         #_product_post_set_title
         if (
@@ -2229,6 +2292,8 @@ class product_product(models.Model):
         if product_tmpl.meli_warranty:
             product.meli_warranty=product_tmpl.meli_warranty
 
+        if (product_tmpl.meli_brand==False or len(product_tmpl.meli_brand)==0):
+            product_tmpl.meli_brand = ("product_brand_id" in product_tmpl._fields and product_tmpl.product_brand_id and product_tmpl.product_brand_id.name )
         if product.meli_brand==False or len(product.meli_brand)==0:
             product.meli_brand = product_tmpl.meli_brand
         if product.meli_model==False or len(product.meli_model)==0:
@@ -2575,7 +2640,7 @@ class product_product(models.Model):
                         "picture_ids": var_pics
                     }
                     var_attributes = product._update_sku_attribute( attributes=("attributes" in var_info and var_info["attributes"]), set_sku=config.mercadolibre_post_default_code )
-                    var_attributes and var.update({"attributes": var_attributes })
+                    var_attributes and var_info.update({"attributes": var_attributes })
                     varias["variations"].append(var_info)
 
                     #WARNING: only for single variation
@@ -2781,9 +2846,9 @@ class product_product(models.Model):
                             if (len(productjson["variations"][ix]["picture_ids"])>len(pictures_v)):
                                 pictures_v = productjson["variations"][ix]["picture_ids"]
                         same_price = productjson["variations"][ix]["price"]
-                        #_logger.info(productjson["variations"][ix])
-                        if (self._is_product_combination(productjson["variations"][ix])):
-                            #_logger.info("_is_product_combination! Post stock to variation")
+                        _logger.info(productjson["variations"][ix])
+                        if (self._is_product_combination(productjson["variations"][ix]) or str(productjson["variations"][ix]["id"])==str(product.meli_id_variation)):
+                            _logger.info("_is_product_combination! Post stock to variation")
                             #_logger.info(productjson["variations"][ix])
                             found_comb = True
                             #reset meli_id_variation (TODO: resetting must be done outside)
@@ -2795,10 +2860,11 @@ class product_product(models.Model):
                             }
                             varias["variations"].append(var)
                             #_logger.info(varias)
-                            #_logger.info(var)
+                            _logger.info(var)
                             responsevar = meli.put("/items/"+product.meli_id+'/variations/'+str( product.meli_id_variation ), var, {'access_token':meli.access_token})
                             #_logger.info(responsevar.json())
                             if responsevar:
+                                _logger.info(responsevar.json())
                                 rjson = responsevar.json()
                                 if rjson:
                                     if "error" in rjson:
@@ -2810,7 +2876,7 @@ class product_product(models.Model):
 
                     if found_comb==False:
                         #add combination!!
-                        #_logger.info("add combination")
+                        _logger.info("Combination not founded: add combination")
                         addvar = self._combination()
                         #_logger.info(addvar)
                         if addvar:
@@ -2824,6 +2890,7 @@ class product_product(models.Model):
                             #_logger.info(addvar)
                             responsevar = meli.post("/items/"+product.meli_id+"/variations", addvar, {'access_token':meli.access_token})
                             if responsevar:
+                                _logger.info(responsevar.json())
                                 rjson = responsevar.json()
                                 if rjson:
                                     if "error" in rjson:
@@ -3110,6 +3177,7 @@ class product_product(models.Model):
 
     _sql_constraints = [
     #    ('unique_variant_meli_id_variation', 'unique(meli_id,meli_id_variation)', 'Meli Id, Meli Id Variation must be unique!'),
+        ('unique_variant_meli_id_variation','check(1=1)','Meli Id, Meli Id Variation duplication possible!')
     ]
 
 product_product()
