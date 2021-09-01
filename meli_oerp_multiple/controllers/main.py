@@ -30,22 +30,29 @@ class MercadoLibre(MercadoLibre):
     @http.route(['/meli_notify','/meli_notify/<string:meli_login_id>'], type='json', auth='public')
     def meli_notify(self, meli_login_id=None, **kw):
 
-        _logger.info("Meli Notify Multiple: "+str(meli_login_id))
+        _logger.info("Meli Notify Multiple: /meli_notify/"+str(meli_login_id))
         meli_account = None
         data = json.loads(request.httprequest.data)
         _logger.info(data)
-        if not meli_login_id:
-            user_id = "user_id" in data and data["user_id"]
-            app_id = "application_id" in data and data["application_id"]
+        user_id = "user_id" in data and data["user_id"]
+        app_id = "application_id" in data and data["application_id"]
+
+        if user_id and app_id:
             meli_account = request.env['mercadolibre.account'].sudo().search([('seller_id','=',user_id),('client_id','=',app_id)])
+
+        if not meli_login_id:
             if not meli_account:
                 return ""
+        else:
+            if not meli_account:
+                meli_account = request.env['mercadolibre.account'].sudo().search([('meli_login_id','=',meli_login_id)],limit=1)
+            if str(meli_account.seller_id)!=str(user_id) or str(meli_account.client_id)!=str(app_id):
+                _logger.error("Warning, account bad match.")
+                meli_account = None
 
         _logger.info("User: "+str(request.env.user))
         _logger.info("User Name: "+str(request.env.user.name))
-        if not meli_account:
-            meli_account = request.env['mercadolibre.account'].sudo().search([('meli_login_id','=',meli_login_id)])
-        _logger.info("Search meli_account: " + str(meli_account.name) )
+        _logger.info("Search meli_account: " + str(meli_account and meli_account.name) )
         if not meli_account:
             return "Account not founded."
 

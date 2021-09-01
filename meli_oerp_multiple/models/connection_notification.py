@@ -28,6 +28,7 @@ import pdb
 import requests
 import json
 from ast import literal_eval
+import random
 
 #from .warning import warning
 try:
@@ -129,6 +130,19 @@ class MercadoLibreConnectionNotification(models.Model):
                                         re = noti._process_notification_order(meli=meli)
                                         if re:
                                             res.append(re)
+
+                        if (n["topic"] in ["questions"]):
+                            nn = self.search([('notification_id','=',n["_id"])])
+                            if (len(nn)==0):
+                                vals = self._prepare_values(values=n, company=company, account=account)
+                                if vals:
+                                    _logger.info(vals)
+                                    noti = self.create(vals)
+                                    _logger.info("Created new QUESTION notification.")
+                                    if (noti):
+                                        re = noti._process_notification_question(meli=meli)
+                                        if re:
+                                            res.append(re)
                 except Exception as e:
                     _logger.error("Error creating notification.")
                     _logger.info(e, exc_info=True)
@@ -165,6 +179,11 @@ class MercadoLibreConnectionNotification(models.Model):
             _logger.info("MercadoLibreConnectionNotification process notification")
             if noti.connection_account:
                 account = noti.connection_account
+
+                if (noti.topic in ["questions"]):
+                    res = noti._process_notification_question(meli=meli)
+                    if res:
+                        result.append(res)
 
                 if (noti.topic in ["order","created_orders","orders_v2"]):
 
@@ -214,12 +233,15 @@ class MercadoLibreConnectionNotification(models.Model):
 
             try:
                 res = meli.get(""+str(noti.resource), {'access_token':meli.access_token} )
+
                 ojson =  res.json()
                 _logger.info("Notification fetched: ")
                 _logger.info(ojson)
+
                 if ('error' in ojson):
                     noti.state = 'FAILED'
-                    noti.processing_errors = str(ojson['error'])
+                    noti.processing_errors = "Notification error:"+str(ojson)
+
                 if ("id" in ojson):
 
                     morder = self.env["mercadolibre.orders"].search( [('order_id','=',ojson["id"])], limit=1 )
@@ -227,8 +249,15 @@ class MercadoLibreConnectionNotification(models.Model):
                     _logger.info(str(morder))
                     pdata = { "id": False, "order_json": ojson }
 
+                    so = None
                     if (morder and len(morder)):
                         pdata["id"] =  morder.id
+                        so = morder.sale_order or None
+                        #Fix auto seller team assignation, if the team company doesnt match the account company  (access issues)
+                        if so:
+                            so.meli_fix_team( meli=meli, config=config )
+
+
 
                     rsjson = morder.orders_update_order_json( data=pdata, meli=meli, config=config )
                     _logger.info("meli_oerp_multiple >> _process_notification_order >> orders_update_order_json >> rsjson: "+str(rsjson))
@@ -245,6 +274,67 @@ class MercadoLibreConnectionNotification(models.Model):
                 noti.state = 'FAILED'
                 noti.processing_errors = str(E)
                 _logger.error("meli_oerp_multiple >> _process_notification_order >> "+noti.processing_errors)
+            finally:
+                noti.processing_ended = ml_datetime(str(datetime.now()))
+
+    def _process_notification_question( self, meli=None):
+
+        _logger.info("meli_oerp_multiple >> _process_notification_question")
+
+        account = self.connection_account
+        if not account:
+            _logger.error("meli_oerp_multiple >> _process_notification_question >> Account not defined")
+            return {}
+
+        company = account.company_id or self.env.user.company_id
+        config = account.configuration
+
+        if not meli:
+            meli = self.env['meli.util'].get_new_instance( company, account )
+
+        for noti in self:
+            noti.state = 'PROCESSING'
+            #noti.attempts+= 1
+            noti.processing_started = ml_datetime(str(datetime.now()))
+
+            try:
+                res = meli.get(""+str(noti.resource), {'access_token':meli.access_token} )
+                ojson =  res.json()
+                _logger.info("Notification fetched: ")
+                _logger.info(ojson)
+
+                if ('error' in ojson):
+                    noti.state = 'FAILED'
+                    noti.processing_errors = "Notification error:"+str(ojson)
+
+                if ("id" in ojson):
+
+                    #morder = self.env["mercadolibre.orders"].search( [('order_id','=',ojson["id"])], limit=1 )
+
+                    #_logger.info(str(morder))
+                    #pdata = { "id": False, "order_json": ojson }
+
+                    #if (morder and len(morder)):
+                    #    pdata["id"] =  morder.id
+
+                    rsjson = {}
+                    #question_id =
+                    rsjson = self.env["mercadolibre.questions"].process_question( Question=ojson, meli=meli, config=config )
+                    #rsjson = morder.orders_update_order_json( data=pdata, meli=meli, config=config )
+                    _logger.info("meli_oerp_multiple >> _process_notification_question >> rsjson: "+str(rsjson))
+
+                    if (rsjson and 'error' in rsjson):
+                        noti.state = 'FAILED'
+                        noti.processing_errors = str(('message' in rsjson and rsjson['message']) or rsjson['error'])
+                        _logger.error("meli_oerp_multiple >> _process_notification_question >> rsjson error: "+noti.processing_errors)
+                    else:
+                        noti.state = 'SUCCESS'
+                        noti.processing_errors = str(rsjson)
+
+            except Exception as E:
+                noti.state = 'FAILED'
+                noti.processing_errors = str(E)
+                _logger.error("meli_oerp_multiple >> _process_notification_question >> "+noti.processing_errors)
             finally:
                 noti.processing_ended = ml_datetime(str(datetime.now()))
 
@@ -283,7 +373,7 @@ class MercadoLibreConnectionNotification(models.Model):
 
         hash = hashlib.md5()
         hash.update( base_str.encode() )
-        hexhash = str("i-")+hash.hexdigest()
+        hexhash = str("i-")+hash.hexdigest()+str("#")+str(int(random.random()*900000+100000))
 
         internals["processing_started"] = date_time
         internals["_id"] = hexhash
