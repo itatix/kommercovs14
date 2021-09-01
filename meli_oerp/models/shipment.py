@@ -394,20 +394,30 @@ class mercadolibre_shipment(models.Model):
             delivery_price = ml_product_price_conversion( self, product_related_obj=product_shipping_id, price=del_price, config=config ),
             if type(delivery_price)==tuple and len(delivery_price):
                 delivery_price = delivery_price[0]
+            
+            conflict = abs( sorder.meli_paid_amount - sorder.meli_total_amount ) > 1.0
 
-            _logger.info("delivery_price:"+str(delivery_price)+" meli_paid_amount: "+str(sorder.meli_paid_amount) +" amount_total:"+str(sorder.amount_total) )
+            received_amount = sorder.meli_amount_to_invoice( meli=meli, config=config )
+            conflict = ( received_amount == 0.0 )
 
-            shipment_amount_cond = abs(sorder.meli_paid_amount - sorder.amount_total)>1.0 and (delivery_price>0.0)
+            if conflict:
+                _logger.info("Order totals conflict, manual check needed.")
+                continue;
+            #if (1==2):
+            #    received_amount = sorder.meli_total_amount
+
+            _logger.info("delivery_price:"+str(delivery_price)+" received_amount: "+str(received_amount) +" amount_total:"+str(sorder.amount_total) )
+            shipment_amount_cond = abs(received_amount - sorder.amount_total)>1.0 and (delivery_price>0.0)
+
             _logger.info("shipment_amount_cond:"+str(shipment_amount_cond))
-            shipment_amount_cond_fix = (sorder.amount_total-sorder.meli_paid_amount)>1.0 and (delivery_price>0.0)
-            _logger.info("shipment_amount_cond_fix:"+str(shipment_amount_cond_fix))
+            shipment_amount_cond_fix = (sorder.amount_total - received_amount)>1.0 and (delivery_price>0.0)
 
-            shipment_amount_cond_fix2 = (sorder.amount_total-sorder.meli_paid_amount)<-1.0 and (delivery_price>0.0)
+            _logger.info("shipment_amount_cond_fix:"+str(shipment_amount_cond_fix))
+            shipment_amount_cond_fix2 = (sorder.amount_total - received_amount)<-1.0 and (delivery_price>0.0)
 
             if (not shipment_amount_cond) or shipment_amount_cond_fix:
-                _logger.info("shipment_cond: "+str(shipment_amount_cond)+" paid: "+str(sorder.meli_paid_amount)+" vs total: "+str(sorder.amount_total))
+                _logger.info("shipment_cond: "+str(shipment_amount_cond)+" paid: "+str(received_amount)+" vs total: "+str(sorder.amount_total))
                 if ( ship_carrier_id and sorder.carrier_id):
-                #if ( ship_carrier_id and sorder.carrier_id and abs( sorder.amount_total - sorder.meli_paid_amount - delivery_price ) < 1.0 ):
                     delivery_price = 0.0
                     set_delivery_line( sorder, delivery_price, "Defined by MELI" )
                 delivery_price = 0.0
@@ -644,7 +654,9 @@ class mercadolibre_shipment(models.Model):
                         all_orders_ids = []
                         coma = ""
                         packed_order_ids =""
-                        for item in items_json:
+                        items_json_sorted = sorted(items_json, key=lambda x: x["order_id"], reverse=False)
+                        _logger.info("items_json_sorted:"+str(items_json_sorted))
+                        for item in items_json_sorted:
                             #check mercadolibre_orders for full pack
                             if "order_id" in item:
                                 #search order, if not present search orders...
@@ -729,15 +741,23 @@ class mercadolibre_shipment(models.Model):
                     #buyer_ids = buyers_obj.search([  ('buyer_id','=',buyer_fields['buyer_id'] ) ] )
                     partner_id = respartner_obj.search([  ('meli_buyer_id','=',ship_fields['receiver_id'] ) ] )
                     if (partner_id.id):
-
-                        sorder_pack = self.env["sale.order"].search( [ ('meli_order_id','=',packed_order_ids) ] )
-
+                        oname = "pack_id" in all_orders[0] and all_orders[0]["pack_id"] and str(  "ML %s" % ( str(all_orders[0]["pack_id"]) ) )
+                        oname = oname or str("ML %s" % ( str(all_orders[0]["order_id"]) ) )
+                        sorder_pack = self.env["sale.order"].search( [ '|',('meli_order_id','=',packed_order_ids), ('name','like', str(oname)) ], order="id asc", limit=1 )
+                        totales = {}
+                        totales['total_amount'] = 0
+                        totales['paid_amount'] = 0
+                        for oi in all_orders:
+                            ord = oi
+                            totales['total_amount']+= ord["total_amount"]
+                            totales['paid_amount']+= ord["paid_amount"]
+                            
                         order_json = {
                             "id": all_orders[0]["order_id"],
                             'status': all_orders[0]["status"],
                             'status_detail': all_orders[0]["status_detail"] or '' ,
-                            'total_amount': shipment.order_cost,
-                            'paid_amount': shipment.order_cost,
+                            'total_amount': totales["total_amount"], #shipment.order_cost,
+                            'paid_amount': totales["paid_amount"], #shipment.order_cost,
                             'currency_id': all_orders[0]["currency_id"],
                             "date_created": all_orders[0]["date_created"],
                             "date_closed": all_orders[0]["date_closed"],
@@ -792,9 +812,12 @@ class mercadolibre_shipment(models.Model):
                             _logger.info("Update sale.order pack")
                             #_logger.info(all_orders[0])
                             #_logger.info(meli_order_fields)
+                            sorder_pack.meli_fix_team( meli=meli, config=config )
                             sorder_pack.write(meli_order_fields)
+                            sorder_pack.meli_fix_team( meli=meli, config=config )
                         else:
                             sorder_pack = self.env["sale.order"].create(meli_order_fields)
+                            sorder_pack.meli_fix_team( meli=meli, config=config )
 
                         if (sorder_pack.id):
                             shipment.sale_order = sorder_pack
