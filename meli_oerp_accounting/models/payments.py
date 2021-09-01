@@ -35,7 +35,7 @@ class MeliPayment(models.Model):
         self.ensure_one()
 
         if not config:
-            config = (self.order_id and and self.order_id.company_id) or (self.order_id and self.order_id.sale_order and self.order_id.sale_order.company_id) or self.env.user.company_id
+            config = (self.order_id and self.order_id.company_id) or (self.order_id and self.order_id.sale_order and self.order_id.sale_order.company_id) or self.env.user.company_id
             if not config:
                 return None
 
