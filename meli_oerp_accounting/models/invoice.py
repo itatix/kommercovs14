@@ -120,7 +120,7 @@ class Invoice(models.Model):
 
         if (template):
 
-            render_template = template._render_qweb_pdf([self.id])
+            render_template = report_render( template, res_ids=[self.id])
 
             #_logger.info(render_template)
             #PDFbytes = base64.b64decode(base64.b64encode(render_template[0]))

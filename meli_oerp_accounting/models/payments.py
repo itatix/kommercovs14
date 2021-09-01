@@ -31,8 +31,14 @@ class MeliPayment(models.Model):
         mlshipment = mlorder.shipment
         return (mlorder and mlorder.sale_order) or (mlshipment and mlshipment.sale_order)
 
-    def create_payment(self):
+    def create_payment( self, meli=None, config=None ):
         self.ensure_one()
+
+        if not config:
+            config = (self.order_id and and self.order_id.company_id) or (self.order_id and self.order_id.sale_order and self.order_id.sale_order.company_id) or self.env.user.company_id
+            if not config:
+                return None
+
         if self.account_payment_id:
             raise ValidationError('Ya esta creado el pago')
         if self.status != 'approved':
@@ -50,6 +56,10 @@ class MeliPayment(models.Model):
         if self._get_ml_customer_order():
             communication = ""+str(self._get_ml_customer_order().name)+" OP "+str(self.payment_id)+str(" TOT")
 
+        #total_amount = self.transaction_amount
+        total_amount = self._get_ml_customer_order().meli_amount_to_invoice( meli=meli, config=config )
+        #self.total_paid_amount
+
         vals_payment = {
                 'partner_id': partner_id.id,
                 'payment_type': 'inbound',
@@ -58,7 +68,7 @@ class MeliPayment(models.Model):
                 'meli_payment_id': self.id,
                 'currency_id': currency_id.id,
                 'partner_type': 'customer',
-                'amount': self.total_paid_amount,
+                'amount': total_amount,
                 }
         vals_payment[acc_pay_ref] = communication
         acct_payment_id = self.env['account.payment'].create(vals_payment)

@@ -51,12 +51,13 @@ class res_company(models.Model):
             "MBO": { "name": "Bolivia", "AUTH_URL": "https://auth.mercadolibre.com.bo" },
             "MLB": { "name": "Brasil", "AUTH_URL": "https://auth.mercadolibre.com.br" },
             "MLC": { "name": "Chile", "AUTH_URL": "https://auth.mercadolibre.cl" },
-            "MCR": {"name": "Costa Rica", "AUTH_URL": "https://auth.mercadolibre.com.cr" },
+            "MCR": { "name": "Costa Rica", "AUTH_URL": "https://auth.mercadolibre.com.cr" },
             "MLV": { "name": "Venezuela", "AUTH_URL": "https://auth.mercadolibre.com.ve" },
             "MRD": { "name": "Dominicana", "AUTH_URL": "https://auth.mercadolibre.com.do" },
             "MPA": { "name": "Panamá", "AUTH_URL": "https://auth.mercadolibre.com.pa" },
             "MPY": { "name": "Paraguay", "AUTH_URL": "https://auth.mercadolibre.com.py" },
             "MEC": { "name": "Ecuador", "AUTH_URL": "https://auth.mercadolibre.com.ec" },
+            "MLU": { "name": "Uruguay", "AUTH_URL": "https://auth.mercadolibre.com.uy" },
         }
         MLsite = self._get_ML_sites(meli=meli)
         if MLsite in ML_AUTH_URL:
@@ -152,6 +153,68 @@ class res_company(models.Model):
 
         _logger.info(str(company.name))
 
+        self.cron_meli_process_get_products( meli=apistate )
+
+        self.cron_meli_process_post_products( meli=apistate )
+
+        self.cron_meli_process_post_stock( meli=apistate )
+
+        self.cron_meli_process_post_price( meli=apistate )
+
+
+
+    def cron_meli_process_post_stock( self, meli=None ):
+
+        company = self.env.user.company_id
+        warningobj = self.pool.get('warning')
+
+        if not meli:
+            meli = self.env['meli.util'].get_new_instance(company)
+            if meli.needlogin_state:
+                return True
+
+        if (company.mercadolibre_cron_post_update_stock):
+            _logger.info("company.mercadolibre_cron_post_update_stock")
+            self.meli_update_remote_stock(meli=meli)
+
+    def cron_meli_process_post_price( self, meli=None ):
+
+        company = self.env.user.company_id
+        warningobj = self.pool.get('warning')
+
+        if not meli:
+            meli = self.env['meli.util'].get_new_instance(company)
+            if meli.needlogin_state:
+                return True
+
+        if (company.mercadolibre_cron_post_update_price):
+            _logger.info("company.mercadolibre_cron_post_update_price")
+            self.meli_update_remote_price(meli=meli)
+
+    def cron_meli_process_post_products( self, meli=None ):
+
+        company = self.env.user.company_id
+        warningobj = self.pool.get('warning')
+
+        if not meli:
+            meli = self.env['meli.util'].get_new_instance(company)
+            if meli.needlogin_state:
+                return True
+
+        if (company.mercadolibre_cron_post_update_products or company.mercadolibre_cron_post_new_products):
+            _logger.info("company.mercadolibre_cron_post_update_products")
+            self.meli_update_remote_products(post_new=company.mercadolibre_cron_post_new_products)
+
+    def cron_meli_process_get_products( self, meli=None ):
+
+        company = self.env.user.company_id
+        warningobj = self.pool.get('warning')
+
+        if not meli:
+            meli = self.env['meli.util'].get_new_instance(company)
+            if meli.needlogin_state:
+                return True
+
         if (company.mercadolibre_cron_get_update_products):
             _logger.info("company.mercadolibre_cron_get_update_products")
             self.meli_update_local_products()
@@ -159,18 +222,6 @@ class res_company(models.Model):
         if (company.mercadolibre_cron_get_new_products):
             _logger.info("company.mercadolibre_cron_get_new_products")
             self.product_meli_get_products()
-
-        if (company.mercadolibre_cron_post_update_products or company.mercadolibre_cron_post_new_products):
-            _logger.info("company.mercadolibre_cron_post_update_products")
-            self.meli_update_remote_products(post_new=company.mercadolibre_cron_post_new_products)
-
-        if (company.mercadolibre_cron_post_update_stock):
-            _logger.info("company.mercadolibre_cron_post_update_stock")
-            self.meli_update_remote_stock(meli=apistate)
-
-        if (company.mercadolibre_cron_post_update_price):
-            _logger.info("company.mercadolibre_cron_post_update_price")
-            self.meli_update_remote_price(meli=apistate)
 
     def cron_meli_orders(self):
         _logger.info('company cron_meli_orders() ')
@@ -185,6 +236,16 @@ class res_company(models.Model):
         if (company.mercadolibre_cron_get_orders):
             _logger.info("company.mercadolibre_cron_get_orders")
             self.meli_query_orders()
+
+    def cron_meli_questions(self):
+        _logger.info('company cron_meli_questions() ')
+
+        company = self.env.user.company_id
+        warningobj = self.pool.get('warning')
+
+        apistate = self.env['meli.util'].get_new_instance(company)
+        if apistate.needlogin_state:
+            return True
 
         if (company.mercadolibre_cron_get_questions):
             _logger.info("company.mercadolibre_cron_get_questions")
@@ -218,6 +279,8 @@ class res_company(models.Model):
     mercadolibre_create_website_categories = fields.Boolean(string='Crear categorías',help='Create Website eCommerce Categories from imported products ML categories')
     mercadolibre_pricelist = fields.Many2one( "product.pricelist", "Product Pricelist default", help="Select price list for ML product"
         "when published from Odoo to ML")
+
+    mercadolibre_order_total_config = fields.Selection( [('manual','Manual'),('manual_conflict','Manual conflict'),('paid_amount','Paid Amount'),('total_amount','Total Amount')] , string="Total Config.", help='Order Total Config, stategy to calculate order/invoice total amount.' )
 
     mercadolibre_buying_mode = fields.Selection( [("buy_it_now","Compre ahora"),
                                                   ("classified","Clasificado")],
@@ -497,7 +560,8 @@ class res_company(models.Model):
                             posting_id = self.env['product.product'].search([('default_code','=',seller_sku)])
                             if (not posting_id or len(posting_id)==0):
                                 posting_id = self.env['product.template'].search([('default_code','=',seller_sku)])
-                                _logger.info("Founded template with default code, dont know how to handle it.")
+                                if posting_id:
+                                    _logger.info("Founded template with default code, dont know how to handle it. seller_sku: "+str(seller_sku)+" template: "+str(posting_id))
                             else:
                                 posting_id.meli_id = item_id
                         if ('variations' in rjson3):
@@ -520,13 +584,14 @@ class res_company(models.Model):
                                 'description': rjson3['title'].encode("utf-8"),
                                 'meli_id': rjson3['id'],
                                 'meli_pub': True,
+                                'type': 'product'
                             }
                             #prod_fields['default_code'] = rjson3['id']
                             productcreated = self.env['product.product'].create((prod_fields))
                             if (productcreated):
                                 if (productcreated.product_tmpl_id):
                                     productcreated.product_tmpl_id.meli_pub = True
-                                _logger.info( "product created: " + str(productcreated) + " >> meli_id:" + str(rjson3['id']) + "-" + str( rjson3['title'].encode("utf-8")) )
+                                _logger.info( "product created: " + str(productcreated) + " >> meli_id:" + str(rjson3['id']) + " >> " + str( rjson3['title'].encode("utf-8")) )
                                 #pdb.set_trace()
                                 _logger.info(productcreated)
                                 productcreated.product_meli_get_product()
@@ -684,7 +749,7 @@ class res_company(models.Model):
                 '|',('company_id','=',False),('company_id','=',company.id)
                 ], order='meli_stock_update asc')
             product_ids = product_ids_null + product_ids_not_null
-            topcommits = 80
+            topcommits = 40
             _logger.info("product_ids stock to update:" + str(product_ids))
             _logger.info("updating stock #" + str(len(product_ids)) + " on " + str(company.name)+ " cron top:"+str(topcommits))
             icommit = 0
